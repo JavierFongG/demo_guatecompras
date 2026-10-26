@@ -36,7 +36,19 @@ ADMIN_REQUIRED = _bool("GC_ADMIN_REQUIRED", MODE != "local")
 ENABLE_UPDATER = _bool("GC_ENABLE_UPDATER", MODE == "local")
 CORS_ORIGINS = [o.strip() for o in os.getenv(
     "GC_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if o.strip()]
-RATE_LIMIT = int(os.getenv("GC_RATE_LIMIT", "0" if MODE == "local" else "120"))  # solicitudes/min por IP; 0 = sin límite
+RATE_LIMIT = int(os.getenv("GC_RATE_LIMIT", "0" if MODE == "local" else "120"))  # solicitudes/min por usuario o IP; 0 = sin límite
+# Documentación interactiva (/docs, /openapi.json): solo en local salvo que se pida
+DOCS_ENABLED = _bool("GC_DOCS", MODE == "local")
+
+# ---- Autenticación (Supabase Auth, ver app/auth.py) ----
+SUPABASE_URL = os.getenv("GC_SUPABASE_URL", "").rstrip("/")   # https://<proyecto>.supabase.co
+AUTH_REQUIRED = _bool("GC_AUTH_REQUIRED", MODE != "local")     # exigir login en todas las rutas de datos
+
+# ---- Observabilidad ----
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
+ENVIRONMENT = os.getenv("GC_ENV", "production" if MODE == "api" else "local")
+# Zona horaria de las fechas "built_at" sin zona (índices construidos antes de usar UTC, en Guatemala)
+LEGACY_TZ_OFFSET_HOURS = -6
 
 # ---- Artefactos remotos (modo api) ----
 # URL base donde el pipeline publicó manifest.json, p. ej.:

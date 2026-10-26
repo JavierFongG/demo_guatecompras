@@ -1,19 +1,24 @@
 # Pipeline de datos programado (gratis en repos públicos; 2,000 min/mes en privados).
-# Descarga lo nuevo de Guatecompras, actualiza el índice de forma incremental y lo publica.
+# Descarga lo nuevo de Guatecompras, actualiza el índice de forma incremental, lo publica en
+# Cloudflare R2 y avisa a la API para que cargue la versión nueva.
 #
 # Configura en Settings → Secrets and variables → Actions:
-#   Variables:  GC_PUBLISH_TARGET   p. ej. hf://datasets/USUARIO/guatecompras-index/index  ó  s3://bucket/index
-#               GC_ARTIFACTS_URL    URL pública de lectura del mismo destino (para la ingesta incremental)
-#               S3_ENDPOINT_URL     (solo R2/B2/GCS) p. ej. https://<cuenta>.r2.cloudflarestorage.com
-#               API_URL             (opcional) URL de tu API para avisarle que hay versión nueva
-#   Secrets:    HF_TOKEN  ó  AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
-#               GC_ADMIN_TOKEN      (opcional, para avisar a la API)
-#               GC_ARTIFACTS_TOKEN  (opcional, si el índice publicado es privado)
+#   Variables:  GC_PUBLISH_TARGET   s3://guatecompras-index/index
+#               GC_ARTIFACTS_URL    https://index.example.gt/index   (lectura pública del mismo destino)
+#               S3_ENDPOINT_URL     https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+#               API_URL             https://api.example.gt           (opcional: avisar a la API)
+#               SUPABASE_URL        https://<proyecto>.supabase.co   (opcional: mantener activo el proyecto)
+#   Secrets:    AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY   (token de R2 con lectura/escritura del bucket)
+#               GC_ADMIN_TOKEN      el mismo valor que en el .env del servidor
+#               HEALTHCHECK_URL     URL de ping de Healthchecks.io (opcional: alerta si falla o no corre)
+#               SUPABASE_ANON_KEY   (opcional, con SUPABASE_URL)
+#               HF_TOKEN / GC_ARTIFACTS_TOKEN   solo si publicas en Hugging Face
 name: Actualizar datos
 
 on:
-  schedule:
-    # - cron: "17 10 * * *"     # todos los días 04:17 hora de Guatemala
+  # Descomenta las dos líneas siguientes cuando la primera corrida manual funcione (Fase 5):
+  # schedule:
+  #   - cron: "17 10 * * *"     # todos los días 04:17 hora de Guatemala
   workflow_dispatch:
     inputs:
       full:
@@ -33,11 +38,17 @@ jobs:
       GC_PUBLISH_TARGET: ${{ vars.GC_PUBLISH_TARGET }}
       GC_ARTIFACTS_URL: ${{ vars.GC_ARTIFACTS_URL }}
       S3_ENDPOINT_URL: ${{ vars.S3_ENDPOINT_URL }}
-      HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      GC_ARTIFACTS_TOKEN: ${{ secrets.GC_ARTIFACTS_TOKEN }}   # solo si el índice es privado (p. ej. dataset privado de HF)
+      AWS_DEFAULT_REGION: auto                                  # R2 lo necesita con boto3
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GC_ARTIFACTS_TOKEN: ${{ secrets.GC_ARTIFACTS_TOKEN }}
+      HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
     steps:
+      - name: Avisar inicio (Healthchecks)
+        if: ${{ env.HEALTHCHECK_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL/start" || true
+
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.11", cache: pip, cache-dependency-path: "backend/requirements-*.txt" }
@@ -58,4 +69,19 @@ jobs:
       - name: Avisar a la API
         if: ${{ vars.API_URL != '' }}
         run: |
-          curl -fsS -X POST "${{ vars.API_URL }}/api/admin/sync" -H "X-Admin-Token: ${{ secrets.GC_ADMIN_TOKEN }}" || true
+          curl -fsS -m 30 -X POST "${{ vars.API_URL }}/api/admin/sync" -H "X-Admin-Token: ${{ secrets.GC_ADMIN_TOKEN }}" || true
+
+      # Los proyectos gratuitos de Supabase se pausan tras 7 días sin actividad: una consulta diaria lo evita
+      - name: Mantener activo Supabase
+        if: ${{ vars.SUPABASE_URL != '' }}
+        run: |
+          curl -fsS -m 30 "${{ vars.SUPABASE_URL }}/rest/v1/heartbeat?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" || true
+
+      - name: Avisar éxito (Healthchecks)
+        if: ${{ success() && env.HEALTHCHECK_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL" || true
+
+      - name: Avisar fallo (Healthchecks)
+        if: ${{ failure() && env.HEALTHCHECK_URL != '' }}
+        run: curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL/fail" || true

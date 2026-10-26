@@ -1,0 +1,35 @@
+# Respaldo semanal de la base de datos de Supabase (usuarios y datos de la app) en Cloudflare R2.
+# El plan gratuito de Supabase no incluye respaldos.
+#
+#   Secrets:    SUPABASE_DB_URL   cadena de conexión (Project Settings → Database → Connection string,
+#                                 "Session pooler", con la contraseña)
+#               AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY   (mismo token de R2 del pipeline)
+#   Variables:  S3_ENDPOINT_URL, BACKUP_BUCKET (p. ej. guatecompras-index; se guarda en backups/)
+name: Respaldo Supabase
+
+on:
+  schedule:
+    - cron: "41 9 * * 0"      # domingos 03:41 hora de Guatemala
+  workflow_dispatch:
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    if: ${{ vars.BACKUP_BUCKET != '' }}
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - name: pg_dump (datos de la app y usuarios)
+        env: { DB_URL: "${{ secrets.SUPABASE_DB_URL }}" }
+        run: |
+          docker run --rm -e DB_URL -v "$PWD:/out" postgres:17 \
+            sh -c 'pg_dump "$DB_URL" --no-owner --no-privileges -n public -n auth -Fc -f /out/supabase.dump'
+          ls -lh supabase.dump
+      - name: Subir a R2 (conserva los últimos 8)
+        run: |
+          S3="aws s3 --endpoint-url ${{ vars.S3_ENDPOINT_URL }}"
+          $S3 cp supabase.dump "s3://${{ vars.BACKUP_BUCKET }}/backups/supabase-$(date -u +%Y%m%d).dump"
+          $S3 ls "s3://${{ vars.BACKUP_BUCKET }}/backups/" | awk '{print $4}' | sort | head -n -8 | \
+            xargs -r -I{} $S3 rm "s3://${{ vars.BACKUP_BUCKET }}/backups/{}"

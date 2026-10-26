@@ -339,7 +339,8 @@ def main() -> None:
 
     # ---- 4. Metadatos y reemplazo atómico ----
     meta = {"model": emb.name, "dim": int(emb.dim), "rows": total, "emb_dtype": "int8",
-            "built_at": datetime.now().isoformat(timespec="seconds"), "days": args.days,
+            # UTC con "Z": el pipeline corre en GitHub Actions (UTC) y la API calcula la antigüedad
+            "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "days": args.days,
             "reused": reused, "computed": len(todo_ids),
             "sources": [z.name for z in zips]}
     con.executemany("INSERT INTO meta VALUES (?,?)", [(k, json.dumps(v)) for k, v in meta.items()])

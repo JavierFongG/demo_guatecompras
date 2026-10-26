@@ -1,0 +1,31 @@
+# Producción en un servidor (Hetzner CX23 u otro VPS). Copia esta carpeta a ~/gc en el servidor:
+#   scp deploy/server/docker-compose.yml deploy/server/.env.example deploy@<servidor>:~/gc/
+#   ssh deploy@<servidor> 'cd ~/gc && cp .env.example .env && chmod 600 .env'   # y edita .env
+#   docker compose up -d
+#
+# HTTPS: Cloudflare Tunnel (contenedor "tunnel"), sin abrir puertos web en el servidor.
+# En el panel del túnel: hostname público api.<tu-dominio> → servicio http://api:8080
+# Los despliegues siguientes los hace GitHub Actions (.github/workflows/api-deploy.yml).
+services:
+  api:
+    image: ${API_IMAGE:-ghcr.io/javierfongg/guatecompras-api:latest}
+    env_file: .env
+    volumes: ["gc-data:/data"]          # índice descargado (~3 GB con dos versiones)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      start_period: 600s                 # el primer arranque descarga ~700 MB
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment: ["TUNNEL_TOKEN=${TUNNEL_TOKEN}"]
+    depends_on: [api]
+    restart: unless-stopped
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+volumes:
+  gc-data: {}

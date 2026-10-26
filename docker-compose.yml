@@ -1,4 +1,5 @@
-# Opciones para una sola máquina (VPS, Oracle Cloud, servidor propio).
+# Opciones para una sola máquina, para pruebas o un servidor propio.
+# Producción del MVP (Hetzner + Cloudflare Tunnel): ver deploy/server/docker-compose.yml.
 #
 #   Todo en uno (frontend + API + botón de actualizar):
 #     GC_ADMIN_TOKEN=una-clave-larga docker compose up -d app
@@ -24,6 +25,9 @@ services:
       GC_ARTIFACTS_POLL: "600"
       GC_CORS_ORIGINS: ${GC_CORS_ORIGINS:-http://localhost:5173}
       GC_ADMIN_TOKEN: ${GC_ADMIN_TOKEN:-}
+      # Login de Supabase: sin GC_SUPABASE_URL la API corre sin login (solo para pruebas locales)
+      GC_SUPABASE_URL: ${GC_SUPABASE_URL:-}
+      GC_AUTH_REQUIRED: ${GC_AUTH_REQUIRED:-0}
     volumes: ["./data/published:/published:ro", "api-data:/data"]
     restart: unless-stopped
     profiles: ["split"]

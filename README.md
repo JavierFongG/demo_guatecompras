@@ -118,9 +118,21 @@ backend/.venv/bin/uvicorn app.main:app --app-dir backend --port 8000
 | POST | `/api/admin/sync` | Fuerza revisar si hay un índice publicado nuevo (modo api) 🔒 |
 
 🔒 = requiere el encabezado `X-Admin-Token` cuando hay `GC_ADMIN_TOKEN` configurado (obligatorio
-fuera del modo local).
+fuera del modo local), o un usuario administrador.
 
-La documentación interactiva está en http://localhost:8000/docs.
+Con login activo (`GC_AUTH_REQUIRED=1`, por defecto en modo `api`), todas las rutas salvo `/api/health`
+exigen `Authorization: Bearer <token de Supabase>`. `GET /api/me` devuelve el usuario de la sesión.
+En local no se pide login.
+
+La documentación interactiva está en http://localhost:8000/docs (solo en modo local).
+
+## Pruebas
+
+```bash
+cd backend
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check . && .venv/bin/pytest -q
+```
 
 ## Configuración (variables de entorno)
 

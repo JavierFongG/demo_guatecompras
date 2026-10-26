@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { API_BASE, api, fmtDateTime } from './api.js'
+import { signOut } from './auth.js'
 import UpdateButton from './components/UpdateButton.jsx'
+import Legal from './views/Legal.jsx'
 import SearchView from './views/SearchView.jsx'
 import SupplierView from './views/SupplierView.jsx'
 
@@ -17,13 +19,17 @@ const VIEWS = [
   },
 ]
 
-// Ruta en el hash: #/buscar  ·  #/proveedor  ·  #/proveedor/<NIT>
+const FEEDBACK_URL = import.meta.env.VITE_FEEDBACK_URL || ''
+
+// Ruta en el hash: #/buscar  ·  #/proveedor  ·  #/proveedor/<NIT>  ·  #/terminos
 function parseHash() {
   const [, view = 'buscar', arg = null] = (window.location.hash || '').replace(/^#/, '').split('/')
-  return { view: VIEWS.some((v) => v.id === view) ? view : 'buscar', arg: arg ? decodeURIComponent(arg) : null }
+  const known = view === 'terminos' || VIEWS.some((v) => v.id === view)
+  return { view: known ? view : 'buscar', arg: arg ? decodeURIComponent(arg) : null }
 }
 
-export default function App() {
+// session: sesión de Supabase (null si el login no está configurado, p. ej. en desarrollo)
+export default function App({ session = null }) {
   const [route, setRoute] = useState(parseHash)
   const [health, setHealth] = useState(null)
   const [facets, setFacets] = useState(null)
@@ -108,11 +114,27 @@ export default function App() {
           )}
           {health?.features?.update && <UpdateButton meta={facets?.meta} onUpdated={onDataUpdated} placement="side" />}
           {health?.warning && <div className="alert small">{health.warning}</div>}
+          {session && (
+            <div className="account">
+              <span className="ellipsis" title={session.user?.email}>{session.user?.email}</span>
+              <button className="link" onClick={() => signOut()}>Cerrar sesión</button>
+            </div>
+          )}
+          <div className="credits">
+            Datos: <a href="https://ocds.guatecompras.gt" target="_blank" rel="noreferrer">Guatecompras OCDS</a>,
+            {' '}Ministerio de Finanzas Públicas (DGAE), licencia{' '}
+            <a href="https://creativecommons.org/licenses/by/4.0/deed.es" target="_blank" rel="noreferrer">CC BY 4.0</a>
+            <div className="credits-links">
+              <a href="#/terminos">Términos y privacidad</a>
+              {FEEDBACK_URL && <a href={FEEDBACK_URL} target="_blank" rel="noreferrer">Enviar comentarios</a>}
+            </div>
+          </div>
         </div>
       </nav>
 
       <div className="content">
         {error && <div className="hero"><div className="alert">{error}</div></div>}
+        {route.view === 'terminos' && <Legal />}
         <div hidden={route.view !== 'buscar'}>
           <SearchView ready={ready} facets={facets} dataVersion={dataVersion} />
         </div>

@@ -1,7 +1,11 @@
+import { getAccessToken, signOut } from './auth.js'
+
 // URL de la API. Vacía = mismo origen (API y frontend juntos, o proxy de Vite en desarrollo).
 // Para publicar el frontend aparte: VITE_API_BASE=https://mi-api.example.com npm run build
 export const API_BASE = (import.meta.env.VITE_API_BASE || '').replace(/\/$/, '')
 
+// Clave de administrador: solo para el modo "todo en uno" (botón Actualizar datos en un servidor
+// propio). En producción (modo api) la administración usa el rol "admin" del login.
 const TOKEN_KEY = 'gc_admin_token'
 export const adminToken = {
   get: () => { try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' } },
@@ -10,9 +14,15 @@ export const adminToken = {
 
 async function req(path, opts = {}) {
   const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) }
+  const session = await getAccessToken()
+  if (session) headers.Authorization = `Bearer ${session}`
   const tok = adminToken.get()
   if (tok && opts.admin) headers['X-Admin-Token'] = tok
   const r = await fetch(API_BASE + path, { ...opts, headers })
+  if (r.status === 401 && session && !opts.admin) {
+    // La sesión venció o fue revocada: volver a la pantalla de login
+    await signOut()
+  }
   if (!r.ok) {
     let msg = `Error ${r.status}`
     try { msg = (await r.json()).detail || msg } catch { /* sin cuerpo */ }
@@ -25,6 +35,7 @@ async function req(path, opts = {}) {
 
 export const api = {
   health: () => req('/api/health'),
+  me: () => req('/api/me'),
   facets: () => req('/api/facets'),
   search: (body) => req('/api/search', { method: 'POST', body: JSON.stringify(body) }),
   buyers: (q) => req(`/api/buyers?q=${encodeURIComponent(q)}`),

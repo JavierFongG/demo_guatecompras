@@ -1,0 +1,72 @@
+# Construye la imagen de la API, la publica en GitHub Container Registry y la despliega en el
+# servidor (Hetzner) por SSH. Corre en cada push a main que cambie el backend.
+#
+# Configura en Settings → Secrets and variables → Actions:
+#   Variables:  DEPLOY_HOST       IP o nombre del servidor
+#               DEPLOY_USER       usuario (p. ej. deploy)
+#   Secrets:    DEPLOY_SSH_KEY    clave privada SSH (su pública va en ~/.ssh/authorized_keys del servidor)
+#               DEPLOY_KNOWN_HOSTS  salida de: ssh-keyscan <DEPLOY_HOST>
+name: Desplegar API
+
+on:
+  push:
+    branches: [main]
+    paths: ["backend/app/**", "backend/requirements-api.txt", "deploy/api.Dockerfile", ".github/workflows/api-deploy.yml"]
+  workflow_dispatch:
+
+concurrency: { group: api-deploy, cancel-in-progress: false }
+
+permissions: { contents: read, packages: write }
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/guatecompras-api
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - name: Nombre de imagen en minúsculas
+        run: echo "IMAGE=${IMAGE,,}" >> "$GITHUB_ENV"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/api.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Desplegar por SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          TARGET: ${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/id_deploy "$TARGET" 'cd ~/gc && docker compose pull api && docker compose up -d && docker image prune -f'
+      - name: Esperar a que la API responda
+        if: ${{ vars.API_URL != '' }}
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS -m 10 "${{ vars.API_URL }}/api/health" | grep -q '"ready":true'; then echo "API lista"; exit 0; fi
+            sleep 10
+          done
+          echo "La API no quedó lista en 10 minutos"; exit 1

@@ -1,5 +1,35 @@
 # Publicar la plataforma en internet
 
+## Producción del MVP (configuración elegida)
+
+| Pieza | Servicio | Archivos |
+|---|---|---|
+| Frontend | Cloudflare Pages (`frontend/`, build `npm run build`, salida `dist`) | `frontend/.env.example` |
+| Login | Supabase Auth, enlace mágico, solo por invitación | `frontend/src/auth.js`, `backend/app/auth.py`, `supabase/schema.sql` |
+| API | Hetzner CX23 + Docker + Cloudflare Tunnel | `deploy/server/` (compose, `.env.example`, `bootstrap.sh`) |
+| Índice | Cloudflare R2 (`s3://guatecompras-index/index`) | `scripts/publish.py` |
+| Pipeline diario | GitHub Actions | `.github/workflows/update-data.yml` |
+| CI y despliegue | GitHub Actions → GHCR → SSH | `.github/workflows/ci.yml`, `api-deploy.yml` |
+| Respaldo de usuarios | GitHub Actions → R2, semanal | `.github/workflows/supabase-backup.yml` |
+
+Orden de puesta en marcha (detalle en el plan de lanzamiento):
+
+1. R2: bucket, dominio `index.<dominio>`, token. Primera publicación desde la Mac:
+   `AWS_DEFAULT_REGION=auto S3_ENDPOINT_URL=… python -m scripts.publish --to s3://guatecompras-index/index`
+2. Supabase: proyecto, correo con SMTP propio (Resend), registro desactivado, `supabase/schema.sql`.
+3. Servidor: `ssh root@<ip> 'bash -s' < deploy/server/bootstrap.sh`, copiar `deploy/server/` a `~/gc`,
+   llenar `.env`, `docker login ghcr.io` (token de solo lectura) y `docker compose up -d`.
+4. Secrets y variables de GitHub (ver encabezado de cada workflow) y correr "Desplegar API".
+5. Cloudflare Pages con `VITE_API_BASE`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (+ opcionales).
+6. Correr "Actualizar datos" a mano; si funciona, descomentar su `schedule`.
+
+En modo `api` la API exige login (`GC_AUTH_REQUIRED=1`) y no arranca sin `GC_SUPABASE_URL`.
+`/api/health` queda pública para el monitoreo e incluye `index_age_hours`.
+
+Lo que sigue describe todas las opciones posibles (incluidas las que no se eligieron).
+
+## Opciones de despliegue
+
 La plataforma se divide en **cuatro piezas independientes**. Cada una se puede publicar en una
 plataforma distinta (o todas en el mismo servidor):
 
@@ -194,11 +224,14 @@ Incluye el frontend, la API y el botón **Actualizar datos**, que pide la clave 
 
 ## Seguridad
 
-- **`GC_ADMIN_TOKEN`**: protege `/api/update`, `/api/reload` y `/api/admin/*`.
+- **Login (Supabase)**: con `GC_AUTH_REQUIRED=1` todas las rutas de datos exigen `Authorization: Bearer <token>`.
+  Los administradores son usuarios con `app_metadata.role = "admin"` (ver `supabase/schema.sql`).
+- **`GC_ADMIN_TOKEN`**: protege `/api/update`, `/api/reload` y `/api/admin/*` para tareas automáticas
+  (o un usuario administrador).
   - En modo `api`, sin clave esas rutas quedan deshabilitadas.
   - En la interfaz, el botón pide la clave y la guarda solo en ese navegador.
 - **En modo `api` no hay botón de actualizar**: la API pública nunca descarga ni procesa datos.
-- **`GC_RATE_LIMIT`**: límite de solicitudes por minuto por IP. Por defecto 120 en modo api; 0 lo desactiva.
+- **`GC_RATE_LIMIT`**: límite de solicitudes por minuto por usuario (o por IP sin sesión). Por defecto 120 en modo api; 0 lo desactiva.
 - **`GC_CORS_ORIGINS`**: solo esos dominios pueden llamar a la API desde un navegador.
 - **Datos personales**: los datos son públicos (licencia CC BY 4.0), pero algunos proveedores son personas individuales con su NIT. Tenlo en cuenta al hacer pública la búsqueda por proveedor.
 
@@ -213,7 +246,13 @@ Incluye el frontend, la API y el botón **Actualizar datos**, que pide la clave 
 | `GC_PUBLISH_TARGET` | pipeline | — | `dir:…` · `s3://…` · `hf://…` |
 | `S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | pipeline | — | Para R2, B2, GCS o S3 |
 | `HF_TOKEN`, `HF_PRIVATE` | pipeline | — | Para Hugging Face Datasets |
-| `GC_ADMIN_TOKEN` | API | — | Clave de administración |
+| `GC_ADMIN_TOKEN` | API | — | Clave de administración (tareas automáticas) |
+| `GC_SUPABASE_URL` | API | — | `https://<proyecto>.supabase.co`; verifica los tokens de login |
+| `GC_AUTH_REQUIRED` | API | `1` en api | Exigir login en las rutas de datos |
+| `GC_DOCS` | API | `1` en local | Mostrar `/docs` y `/openapi.json` |
+| `SENTRY_DSN`, `GC_ENV` | API | — | Enviar errores a Sentry |
+| `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` | frontend (build) | vacío | Login; vacías = sin login |
+| `VITE_SENTRY_DSN`, `VITE_FEEDBACK_URL`, `VITE_CONTACT_EMAIL` | frontend (build) | vacío | Opcionales |
 | `GC_ADMIN_REQUIRED` | API | `1` en api | Exigir clave también en modo local |
 | `GC_CORS_ORIGINS` | API | localhost:5173 | Orígenes permitidos, separados por comas |
 | `GC_RATE_LIMIT` | API | 0 local / 120 api | Solicitudes por minuto por IP |

@@ -5,27 +5,38 @@ Modos (GC_MODE):
   api    servicio de solo lectura: descarga el índice publicado (GC_ARTIFACTS_URL) y lo
          actualiza en caliente; sin descargas ni ingesta en el servidor
 
+Autenticación (app/auth.py): todas las rutas de datos exigen un token de Supabase cuando
+GC_AUTH_REQUIRED=1 (por defecto en modo api). /api/health queda pública para el monitoreo.
+
 Arranque:  uvicorn app.main:app --app-dir backend --port 8000
 """
 from __future__ import annotations
 
+import hmac
 import threading
 import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import auth, config
 from .artifacts import Syncer
 from .embedder import get_embedder
 from .search import SearchRequest
 from .suppliers import FullIndex, RecommendRequest
 from .updater import Updater
+
+if config.SENTRY_DSN:
+    import sentry_sdk
+
+    sentry_sdk.init(dsn=config.SENTRY_DSN, environment=config.ENVIRONMENT, traces_sample_rate=0.0,
+                    send_default_pii=False)
 
 index: FullIndex | None = None
 updater: Updater | None = None
@@ -42,6 +53,7 @@ def _warm() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global index, updater, syncer
+    auth.check_config()
     index = FullIndex()
     updater = Updater(on_done=lambda: index.load()) if config.ENABLE_UPDATER else None
     syncer = Syncer(on_new=lambda: index.load())
@@ -52,14 +64,27 @@ async def lifespan(app: FastAPI):
         updater.cancel()
 
 
-app = FastAPI(title="Buscador de concursos Guatecompras", version="2.0", lifespan=lifespan)
+_docs = config.DOCS_ENABLED
+app = FastAPI(title="Buscador de concursos Guatecompras", version="2.1", lifespan=lifespan,
+              docs_url="/docs" if _docs else None, redoc_url="/redoc" if _docs else None,
+              openapi_url="/openapi.json" if _docs else None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["GET", "POST"],
-                   allow_headers=["Content-Type", "X-Admin-Token"])
+                   allow_headers=["Content-Type", "Authorization", "X-Admin-Token"])
 
 
-# --------------------------------------------------------------------------- límite por IP
+# --------------------------------------------------------------------------- límite por usuario / IP
 _hits: dict[str, deque] = defaultdict(deque)
+
+
+def _client_key(request: Request) -> str:
+    """Usuario del token si lo hay; si no, la IP real (Cloudflare la pone en CF-Connecting-IP)."""
+    sub = auth.unverified_sub(request.headers.get("authorization", ""))
+    if sub:
+        return "u:" + sub
+    ip = request.headers.get("cf-connecting-ip") or \
+        (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")).split(",")[0]
+    return "ip:" + ip.strip()
 
 
 @app.middleware("http")
@@ -67,8 +92,7 @@ async def rate_limit(request: Request, call_next):
     path = request.url.path
     exempt = path in ("/api/health", "/api/update/status") or path.startswith("/api/admin")
     if config.RATE_LIMIT and path.startswith("/api/") and not exempt:
-        ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "?")).split(",")[0]
-        now, q = time.time(), _hits[ip]
+        now, q = time.time(), _hits[_client_key(request)]
         while q and q[0] < now - 60:
             q.popleft()
         if len(q) >= config.RATE_LIMIT:
@@ -77,14 +101,21 @@ async def rate_limit(request: Request, call_next):
     return await call_next(request)
 
 
-def admin(x_admin_token: str = Header(default="")) -> None:
-    """Protege las operaciones administrativas. En modo local sin token configurado se permiten
-    (la app solo escucha en 127.0.0.1); en cualquier otro caso exigen GC_ADMIN_TOKEN."""
-    if config.ADMIN_TOKEN:
-        if x_admin_token != config.ADMIN_TOKEN:
+def admin(x_admin_token: str = Header(default=""), authorization: str = Header(default="")) -> None:
+    """Protege las operaciones administrativas. Se permiten con:
+      - X-Admin-Token = GC_ADMIN_TOKEN (tareas automáticas, p. ej. el pipeline), o
+      - un usuario con app_metadata.role = "admin" (login de Supabase).
+    En modo local sin token ni login configurados se permiten (la app solo escucha en 127.0.0.1)."""
+    if config.ADMIN_TOKEN and x_admin_token:
+        if not hmac.compare_digest(x_admin_token, config.ADMIN_TOKEN):
             raise HTTPException(401, "Clave de administrador incorrecta")
-    elif config.ADMIN_REQUIRED:
-        raise HTTPException(403, "Operación deshabilitada: configura GC_ADMIN_TOKEN en el servidor")
+        return
+    if auth.bearer(authorization) and config.SUPABASE_URL:
+        if not auth.is_admin(auth.verify(auth.bearer(authorization))):
+            raise HTTPException(403, "Solo administradores")
+        return
+    if config.ADMIN_TOKEN or config.ADMIN_REQUIRED or config.AUTH_REQUIRED:
+        raise HTTPException(401, "Se requiere un administrador")
 
 
 def _idx() -> FullIndex:
@@ -96,6 +127,16 @@ def _idx() -> FullIndex:
 
 
 # --------------------------------------------------------------------------- lectura
+# Todas las rutas de datos van en este router: exigen sesión (ver app/auth.py).
+api = APIRouter(dependencies=[Depends(auth.current_user)])
+
+
+@app.get("/api/me")
+def me(user: dict = Depends(auth.current_user)):
+    """Usuario de la sesión actual (para el frontend)."""
+    return {"id": user.get("sub"), "email": user.get("email"), "admin": auth.is_admin(user)}
+
+
 @app.get("/api/health")
 def health():
     meta = index.meta if index else {}
@@ -111,25 +152,41 @@ def health():
         "features": {"update": bool(updater), "sync": bool(config.ARTIFACTS_URL),
                      "admin_token": bool(config.ADMIN_TOKEN)},
         "window_days": config.WINDOW_DAYS, "warning": warn,
+        "index_age_hours": _age_hours(meta.get("built_at")),
+        "auth": {"required": config.AUTH_REQUIRED},
     }
 
 
-@app.get("/api/facets")
+def _age_hours(built_at: str | None) -> float | None:
+    """Horas desde que se construyó el índice. Las fechas sin zona son de índices construidos
+    antes de usar UTC (hora de Guatemala)."""
+    if not built_at:
+        return None
+    try:
+        t = datetime.fromisoformat(built_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone(timedelta(hours=config.LEGACY_TZ_OFFSET_HOURS)))
+    return round((datetime.now(timezone.utc) - t).total_seconds() / 3600, 1)
+
+
+@api.get("/api/facets")
 def facets():
     return _idx().facets()
 
 
-@app.post("/api/search")
+@api.post("/api/search")
 def search(req: SearchRequest):
     return _idx().search(req)
 
 
-@app.get("/api/buyers")
+@api.get("/api/buyers")
 def buyers(q: str = Query("", max_length=100)):
     return _idx().buyers(q)
 
 
-@app.get("/api/concursos/{nog}")
+@api.get("/api/concursos/{nog}")
 def concurso(nog: str):
     d = _idx().get(nog)
     if not d:
@@ -137,19 +194,19 @@ def concurso(nog: str):
     return d
 
 
-@app.get("/api/concursos/{nog}/referencias")
+@api.get("/api/concursos/{nog}/referencias")
 def referencias(nog: str, k: int = Query(5, ge=1, le=20)):
     """Concursos pasados y adjudicados más parecidos por descripción y entidad (referencia de precios)."""
     return _idx().awarded_references(nog, k)
 
 
-@app.get("/api/suppliers")
+@api.get("/api/suppliers")
 def suppliers(q: str = Query("", max_length=100)):
     """Autocompletado de proveedores por NIT o nombre."""
     return _idx().supplier_search(q)
 
 
-@app.get("/api/suppliers/{nit}")
+@api.get("/api/suppliers/{nit}")
 def supplier_profile(nit: str):
     p = _idx().supplier_profile(nit)
     if not p:
@@ -157,7 +214,7 @@ def supplier_profile(nit: str):
     return p
 
 
-@app.post("/api/recommend")
+@api.post("/api/recommend")
 def recommend(req: RecommendRequest):
     """Concursos relevantes para un proveedor según su historial de adjudicaciones."""
     return _idx().recommend(req)
@@ -181,7 +238,7 @@ def admin_sync():
     return syncer.state
 
 
-@app.get("/api/admin/sync")
+@app.get("/api/admin/sync", dependencies=[Depends(admin)])
 def admin_sync_status():
     return syncer.state if syncer else {}
 
@@ -202,7 +259,7 @@ def update_start():
     return u.status()
 
 
-@app.get("/api/update/status")
+@api.get("/api/update/status")
 def update_status():
     return _updater().status()
 
@@ -214,6 +271,9 @@ def update_cancel():
     return u.status()
 
 
+app.include_router(api)
+
+
 # --------------------------------------------------------------------------- frontend (opcional)
 # Si existe frontend/dist se sirve aquí (todo en una URL). Si el frontend se publica aparte
 # (Cloudflare Pages, GitHub Pages…), basta con no compilarlo junto a la API.
@@ -223,6 +283,8 @@ if DIST.exists() and (DIST / "assets").exists():
 
     @app.get("/{path:path}", include_in_schema=False)
     def spa(path: str):
+        if path.startswith("api/") or path in ("docs", "redoc", "openapi.json"):
+            raise HTTPException(404, "No encontrado")      # no servir la app en rutas de la API
         f = (DIST / path).resolve()
         ok = path and f.is_file() and f.is_relative_to(DIST.resolve())
         return FileResponse(f if ok else DIST / "index.html")

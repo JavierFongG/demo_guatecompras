@@ -5,3 +5,5 @@ numpy>=1.26
 onnxruntime>=1.17
 tokenizers>=0.15
 requests>=2.31
+PyJWT[crypto]>=2.8        # verificar el login de Supabase (JWKS)
+sentry-sdk[fastapi]>=2.0  # errores a Sentry (solo si SENTRY_DSN está configurado)

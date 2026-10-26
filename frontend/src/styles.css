@@ -343,3 +343,29 @@ input[type=checkbox] { accent-color: var(--accent); }
   .ellipsis { max-width: 180px; }
   .drawer { padding: 20px 16px 40px; }
 }
+
+/* ---- Login, cuenta, créditos y términos ---- */
+.login { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
+.login-card { width: 100%; max-width: 400px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px 24px; box-shadow: var(--shadow); }
+.login-card .brand { margin-bottom: 20px; }
+.login-card h1 { font-size: 20px; margin: 0 0 6px; }
+.login-card form { display: grid; gap: 10px; }
+.login-card input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.login-card input:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+.login-card .btn.primary { width: 100%; padding: 10px; justify-content: center; }
+.login-foot { margin: 20px 0 0; text-align: center; }
+.account { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--ink-2); }
+.account .ellipsis { max-width: 150px; }
+.credits { font-size: 11px; color: var(--ink-3); line-height: 1.5; }
+.credits a { color: var(--ink-2); }
+.credits-links { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+.legal { max-width: 720px; margin: 0 auto; padding: 24px 28px 48px; }
+.legal.standalone { padding-top: 40px; }
+.legal h1 { font-size: 22px; margin: 8px 0 4px; }
+.legal h2 { font-size: 15px; margin: 24px 0 6px; }
+.legal p, .legal li { color: var(--ink-2); }
+@media (max-width: 760px) { .legal { padding: 16px; } }
+.login-card .brand strong { display: block; font-size: 15px; }
+.login-card .brand span:not(.logo) { display: block; font-size: 12px; color: var(--ink-3); }
+.login-card .brand + * h1, .login-card > h1 { margin-top: 4px; }
+.login-card p.muted { margin: 0 0 6px; }
