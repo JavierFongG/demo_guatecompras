@@ -1,0 +1,7 @@
+# API de solo lectura (búsqueda y recomendaciones). Sin PyTorch: ~150 MB instalados.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+onnxruntime>=1.17
+tokenizers>=0.15
+requests>=2.31

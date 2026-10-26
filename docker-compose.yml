@@ -1,0 +1,39 @@
+# Opciones para una sola máquina (VPS, Oracle Cloud, servidor propio).
+#
+#   Todo en uno (frontend + API + botón de actualizar):
+#     GC_ADMIN_TOKEN=una-clave-larga docker compose up -d app
+#
+#   API de solo lectura + pipeline aparte (el pipeline publica en ./data/published y la API lo lee):
+#     docker compose --profile split up -d api
+#     docker compose --profile split run --rm pipeline     # p. ej. desde cron, una vez al día
+services:
+  app:
+    build: { context: ., dockerfile: deploy/allinone.Dockerfile }
+    ports: ["8000:8000"]
+    environment:
+      # Sin GC_ADMIN_TOKEN el botón "Actualizar datos" queda deshabilitado (GC_ADMIN_REQUIRED=1)
+      GC_ADMIN_TOKEN: ${GC_ADMIN_TOKEN:-}
+    volumes: ["./data:/data"]
+    restart: unless-stopped
+
+  api:
+    build: { context: ., dockerfile: deploy/api.Dockerfile }
+    ports: ["8080:8080"]
+    environment:
+      GC_ARTIFACTS_URL: file:///published
+      GC_ARTIFACTS_POLL: "600"
+      GC_CORS_ORIGINS: ${GC_CORS_ORIGINS:-http://localhost:5173}
+      GC_ADMIN_TOKEN: ${GC_ADMIN_TOKEN:-}
+    volumes: ["./data/published:/published:ro", "api-data:/data"]
+    restart: unless-stopped
+    profiles: ["split"]
+
+  pipeline:
+    build: { context: ., dockerfile: deploy/pipeline.Dockerfile }
+    environment:
+      GC_PUBLISH_TARGET: dir:/data/published
+    volumes: ["./data:/data"]
+    profiles: ["split"]
+
+volumes:
+  api-data:

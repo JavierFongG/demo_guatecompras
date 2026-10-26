@@ -1,0 +1,61 @@
+# Pipeline de datos programado (gratis en repos públicos; 2,000 min/mes en privados).
+# Descarga lo nuevo de Guatecompras, actualiza el índice de forma incremental y lo publica.
+#
+# Configura en Settings → Secrets and variables → Actions:
+#   Variables:  GC_PUBLISH_TARGET   p. ej. hf://datasets/USUARIO/guatecompras-index/index  ó  s3://bucket/index
+#               GC_ARTIFACTS_URL    URL pública de lectura del mismo destino (para la ingesta incremental)
+#               S3_ENDPOINT_URL     (solo R2/B2/GCS) p. ej. https://<cuenta>.r2.cloudflarestorage.com
+#               API_URL             (opcional) URL de tu API para avisarle que hay versión nueva
+#   Secrets:    HF_TOKEN  ó  AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+#               GC_ADMIN_TOKEN      (opcional, para avisar a la API)
+#               GC_ARTIFACTS_TOKEN  (opcional, si el índice publicado es privado)
+name: Actualizar datos
+
+on:
+  schedule:
+    - cron: "17 10 * * *"     # todos los días 04:17 hora de Guatemala
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Recalcular todos los embeddings"
+        type: boolean
+        default: false
+
+concurrency: { group: update-data, cancel-in-progress: false }
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    defaults: { run: { working-directory: backend } }
+    env:
+      GC_DATA_DIR: ${{ github.workspace }}/data
+      GC_PUBLISH_TARGET: ${{ vars.GC_PUBLISH_TARGET }}
+      GC_ARTIFACTS_URL: ${{ vars.GC_ARTIFACTS_URL }}
+      S3_ENDPOINT_URL: ${{ vars.S3_ENDPOINT_URL }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      GC_ARTIFACTS_TOKEN: ${{ secrets.GC_ARTIFACTS_TOKEN }}   # solo si el índice es privado (p. ej. dataset privado de HF)
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: pip, cache-dependency-path: "backend/requirements-*.txt" }
+      - run: pip install -r requirements-pipeline.txt -r requirements-publish.txt
+
+      # Zips mensuales y modelo: se reutilizan entre corridas (solo baja lo que cambió)
+      - uses: actions/cache@v4
+        with:
+          path: |
+            data/raw
+            data/cache
+          key: gc-raw-${{ github.run_id }}
+          restore-keys: gc-raw-
+
+      - name: Pipeline (pull → download → ingest → publish)
+        run: python -m scripts.run_pipeline ${{ inputs.full && '--full' || '' }}
+
+      - name: Avisar a la API
+        if: ${{ vars.API_URL != '' }}
+        run: |
+          curl -fsS -X POST "${{ vars.API_URL }}/api/admin/sync" -H "X-Admin-Token: ${{ secrets.GC_ADMIN_TOKEN }}" || true

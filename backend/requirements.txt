@@ -1,0 +1,3 @@
+# Todo en uno (modo local): API + pipeline.
+# Opcional para máxima calidad con GPU de Apple: pip install sentence-transformers  y  GC_EMBEDDER=st
+-r requirements-pipeline.txt
