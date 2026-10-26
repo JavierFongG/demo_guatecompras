@@ -13,7 +13,7 @@ name: Actualizar datos
 
 on:
   schedule:
-    - cron: "17 10 * * *"     # todos los días 04:17 hora de Guatemala
+    # - cron: "17 10 * * *"     # todos los días 04:17 hora de Guatemala
   workflow_dispatch:
     inputs:
       full:
